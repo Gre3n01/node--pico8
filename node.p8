@@ -4,13 +4,19 @@ __lua__
 -- node.p8
 -- base game: node in the lobby
 
+-- a game of rooms, keys, doors, mobs, items,
+-- no health, if death then player is peanalized in death room or grave for a period of time then back to lobby
+-- lobby is always start of game, we will continually add to game by adding more rooms until no more space is allowed 
+-- we will add items, puzzles and mobs as we go. the object of game is to find a new node, found in the last room before token count has been reached.
+
 --==[ constants ]==--
 -- wall sprite numbers
+-- player can not move through these wall sprites - it will block player
 wall_sprites = {64,65,66,80,81,82,96,97,98}
 
 -- map chunk for lobby
-lobby_x1, lobby_y1 = 1, 1
-lobby_x2, lobby_y2 = 11, 4
+lobby_x1, lobby_y1 = 0, 0
+lobby_x2, lobby_y2 = 12, 5
 
 -- room ids
 room_lobby = 1
@@ -20,8 +26,47 @@ roomid = room_lobby
 room_name = "lobby"
 room_name_timer = 0
 
+-- room objects
+current_objects = {}
+
 -- player object
 node = {}
+
+
+--==[ room data table ]==--
+--[[
+ each room is defined here with:
+  - name: short display name
+  - map_x1, map_y1, map_x2, map_y2: map chunk to draw for this room
+  - start_x, start_y: player start tile (not pixels)
+  - objects: list of objects in this room (mobs, keys, etc)
+ add new rooms by adding new entries to this table.
+--]]
+rooms = {
+ [1] = {
+  name="lobby",
+  map_x1=0, map_y1=0, map_x2=12, map_y2=5,
+  start_x=2, start_y=2,
+  objects={
+   {type="door", x=12, y=2, dest_room=120, dest_x=1, dest_y=2, locked=false}
+   -- other objects...
+  }
+ }, -- <--- comma added here
+
+ [120] = {
+  name="library",
+  map_x1=16, map_y1=0, map_x2=28, map_y2=5,
+  start_x=3, start_y=2,
+  objects={
+   {type="mob", x=5, y=3},
+   {type="mob", x=8, y=4},
+   {type="key", x=7, y=2, hidden=true},
+   {type="book", x=6, y=2}
+  }
+ } -- <--- no comma needed after last room
+}
+-- end of rooms table fix
+
 
 --==[ common functions ]==--
 
@@ -42,6 +87,39 @@ function show_room_name(name)
  sfx(0) -- play "enter room" sound
 end
 
+--==[ room loading function ]==--
+--[[
+ loads a room by id:
+  - sets the current room id
+  - updates the map chunk variables
+  - moves the player to the room's start position
+  - loads the room's objects into current_objects
+  - plays the enter room sound and displays the room name
+ call this function whenever the player enters a new room.
+--]]
+function load_room(id)
+ local r = rooms[id]
+ if not r then
+  printh("room "..id.." not found!")
+  return
+ end
+ roomid = id
+ -- set map chunk for this room
+ lobby_x1, lobby_y1 = r.map_x1, r.map_y1
+ lobby_x2, lobby_y2 = r.map_x2, r.map_y2
+ -- move player to room's start tile (convert to pixels)
+ node.x = r.start_x * 8
+ node.y = r.start_y * 8
+ -- load objects for this room
+ current_objects = {}
+ for o in all(r.objects) do
+  add(current_objects, o)
+ end
+ -- play sound and show room name
+ show_room_name(r.name)
+end
+
+
 --==[ character creation ]==--
 
 function create_node()
@@ -60,11 +138,17 @@ end
 function move_node()
  local dx, dy = 0, 0
 
- -- arrow keys
- if btn(0) or btn(⬅️) or btn(4) then dx = dx - 1 end -- left or 'a'
- if btn(1) or btn(➡️) or btn(5) then dx = dx + 1 end -- right or 'd'
- if btn(2) or btn(⬆️) or btn(6) then dy = dy - 1 end -- up or 'w'
- if btn(3) or btn(⬇️) or btn(7) then dy = dy + 1 end -- down or 's'
+ -- arrow keys and controller
+ if btn(0) then dx = dx - 1 end -- left
+ if btn(1) then dx = dx + 1 end -- right
+ if btn(2) then dy = dy - 1 end -- up
+ if btn(3) then dy = dy + 1 end -- down
+
+ -- wasd keys (keyboard, continuous)
+ if stat(34, 97) then dx = dx - 1 end   -- 'a'
+ if stat(34,100) then dx = dx + 1 end   -- 'd'
+ if stat(34,119) then dy = dy - 1 end   -- 'w'
+ if stat(34,115) then dy = dy + 1 end   -- 's'
 
  -- normalize diagonal movement
  if dx ~= 0 and dy ~= 0 then
@@ -72,9 +156,6 @@ function move_node()
   dy *= 0.7071
  end
 
- -- controller support (pico-8 handles this automatically with btn())
-
- -- try to move, but check for wall collisions
  try_move_node(dx * node.spd, dy * node.spd)
 end
 
@@ -103,17 +184,17 @@ end
 
 --==[ room management ]==--
 
-function get_room_name(id)
- if id == 1 then return "lobby" end
- -- add more rooms here later
- return "???"
-end
+--function get_room_name(id)
+-- if id == 1 then return "lobby" end
+-- -- add more rooms here later
+-- return "???"
+--end
 
 --==[ pico-8 builtins ]==--
 
 function _init()
  create_node()
- show_room_name(get_room_name(roomid))
+ load_room(roomid) -- loads the first room and its objects
 end
 
 function _update()
@@ -123,6 +204,30 @@ function _update()
  if room_name_timer > 0 then
   room_name_timer -= 1
  end
+
+ -- check for object interactions
+ for o in all(current_objects) do
+  -- check if node is on the same tile as an object
+  if flr(node.x/8) == o.x and flr(node.y/8) == o.y then
+   if o.type == "key" and not o.hidden then
+    -- pick up key (remove from room)
+    del(current_objects, o)
+    sfx(1) -- play pickup sound
+    -- you can set a flag here to unlock a door, etc.
+   elseif o.type == "door" and not o.locked then
+    -- check if player presses "up" or "w" to enter door
+    if btnp(2) or stat(34,119) then
+     load_room(o.dest_room)
+     -- optionally, set node position if door specifies
+     if o.dest_x and o.dest_y then
+      node.x = o.dest_x * 8
+      node.y = o.dest_y * 8
+     end
+    end
+   end
+   -- add more interactions for other object types as needed
+  end
+ end
 end
 
 function _draw()
@@ -131,7 +236,24 @@ function _draw()
  -- draw the map (lobby only for now)
  map(lobby_x1, lobby_y1, 0, 0, lobby_x2-lobby_x1+1, lobby_y2-lobby_y1+1)
 
- -- draw node
+ -- draw objects in the current room
+ for o in all(current_objects) do
+  -- draw each object type with correct sprite
+  if o.type == "mob" then
+   spr(17, o.x*8, o.y*8) -- firebug (change to 19 for firenode if needed)
+  elseif o.type == "key" then
+   if not o.hidden then
+    spr(68, o.x*8, o.y*8) -- key sprite
+   end
+  elseif o.type == "book" then
+   spr(69, o.x*8, o.y*8) -- book sprite (choose your sprite)
+  elseif o.type == "door" then
+   spr(67, o.x*8, o.y*8) -- door sprite
+  end
+ end
+ -- end of object drawing fix
+
+ -- draw node   -node is the player
  spr(node.spr, node.x, node.y)
 
  -- draw room name if timer > 0
@@ -176,14 +298,14 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000099f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000dddddddddddddddddd00000d444d009a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000dddddddddddddddddd00000d444d009ddd6600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000dd55555555555555dd000005444500990d0d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000dd00000000000000dd00000d444d0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000dd00000000000000dd00000222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000009999990000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000999990000090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000009999990000099000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000dddddddddddddddddd00009999590000090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000dddddddddddddddddd00009999990000090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000dd55555555555555dd00000999990000444000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000dd00000000000000dd00009999990004000400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000dd00000000000000dd00000000000000444000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000dd00000000000000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000dd00000000000000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 000dd00000000000000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -212,9 +334,9 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00999000009990000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-099a9900009a90000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00999000009990000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00090000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+099a9900009a9000000cc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+009990000099900000cccc0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00090000000000000cccccc000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
 4041414141414141414141414200404141414141414142000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 5000001000001010100000005200500010101010100052000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
